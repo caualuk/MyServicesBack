@@ -99,6 +99,39 @@ ORDER BY s.created_at DESC;
   }
 }
 
+// list services where the user is the provider
+async function getEmployeeServices(req, res) {
+  const employeeId = req.user.id;
+
+  try {
+    const result = await pool.query(
+      `
+      SELECT 
+  s.id,
+  s.status,
+  s.value,
+  s.added_as,
+  s.created_at,
+  u2.name AS client_name,
+  p.name AS profession_name
+FROM services s
+JOIN users u2 ON s.client_id = u2.id
+LEFT JOIN professions p ON s.profession_id = p.id
+WHERE s.employee_id = $1
+ORDER BY s.created_at DESC;
+      `,
+      [employeeId],
+    );
+
+    res.json(result.rows);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({
+      error: "Erro ao buscar serviços do funcionário",
+    });
+  }
+}
+
 async function updateServiceStatus(req, res) {
   const serviceId = req.params.id;
   const userId = req.user.id;
@@ -176,18 +209,19 @@ async function getMetrics(req, res) {
     }
 
     if (role === "EMPLOYEE") {
+      // valores que o funcionário efetivamente ganhou (serviços realizados por ele)
       const earnedRes = await pool.query(
         `
         SELECT COALESCE(SUM(value),0) AS total_earned,
                COUNT(*) AS services_done
         FROM services
-        WHERE client_id = $1
+        WHERE employee_id = $1
           AND status = 'PAID'
-          AND added_as = 'EMPLOYEE'
         `,
         [userId],
       );
 
+      // gastos que o funcionário teve quando agiu como cliente
       const spentRes = await pool.query(
         `
         SELECT COALESCE(SUM(value),0) AS total_spent
@@ -257,16 +291,15 @@ async function getChartLineData(req, res) {
     }
 
     if (role === "EMPLOYEE") {
-      // Ganhos e gastos por data
+      // Ganhos por data: serviços realizados pelo funcionário
       const ganhoRes = await pool.query(
         `
         SELECT 
           DATE(s.created_at) AS date,
           SUM(s.value) AS amount
         FROM services s
-        WHERE s.client_id = $1
+        WHERE s.employee_id = $1
           AND s.status = 'PAID'
-          AND s.added_as = 'EMPLOYEE'
         GROUP BY DATE(s.created_at)
         ORDER BY DATE(s.created_at)
         LIMIT 30
@@ -274,6 +307,7 @@ async function getChartLineData(req, res) {
         [userId],
       );
 
+      // Gastos por data: quando o funcionário agiu como cliente
       const gastoRes = await pool.query(
         `
         SELECT 
@@ -282,7 +316,6 @@ async function getChartLineData(req, res) {
         FROM services s
         WHERE s.client_id = $1
           AND s.status = 'PAID'
-          AND s.added_as = 'CLIENT'
         GROUP BY DATE(s.created_at)
         ORDER BY DATE(s.created_at)
         LIMIT 30
@@ -372,6 +405,7 @@ async function getServicesByProfession(req, res) {
 module.exports = {
   createService,
   getClientServices,
+  getEmployeeServices,
   updateServiceStatus,
   getMetrics,
   getChartLineData,

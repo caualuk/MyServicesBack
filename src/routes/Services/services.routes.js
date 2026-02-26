@@ -5,7 +5,7 @@ const { authMiddleware } = require("../../middleware/auth");
 const {
   createService,
   getClientServices,
-  //   getEmployeeServices,
+  getEmployeeServices,
   updateServiceStatus,
   getMetrics,
   getChartLineData,
@@ -20,8 +20,8 @@ router.post("/", authMiddleware, createService);
 // Listar serviços do cliente logado
 router.get("/client", authMiddleware, getClientServices);
 
-// // Listar serviços do funcionário logado
-// router.get("/employee", authMiddleware, getEmployeeServices);
+// Listar serviços do funcionário logado
+router.get("/employee", authMiddleware, getEmployeeServices);
 
 // Atualizar status
 router.patch("/:id/status", authMiddleware, updateServiceStatus);
