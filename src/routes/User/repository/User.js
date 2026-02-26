@@ -322,9 +322,10 @@ async function getEmployeeServices(req, res) {
   }
 }
 
-// AUTOCOMPLETE FUNCIONÁRIOS - PÁGINA DE SERVICES
+// AUTOCOMPLETE FUNCIONÁRIOS - PÁGINA DE SERVICES (APENAS DENTRO DO RAIO)
 async function searchEmployees(req, res) {
   const { q } = req.query;
+  const userId = req.user.id; // vindo do authMiddleware
 
   if (!q) {
     return res.status(400).json({
@@ -333,6 +334,59 @@ async function searchEmployees(req, res) {
   }
 
   try {
+    // Buscar o usuário cliente com suas coordenadas e raio
+    const userQuery = await pool.query(
+      `SELECT u.id, u.radius,
+              c.name AS city_name,
+              c.lat,
+              c.lon
+       FROM users u
+       JOIN cities c ON u.city_id = c.id
+       WHERE u.id = $1`,
+      [userId],
+    );
+
+    if (userQuery.rows.length === 0) {
+      return res.status(400).json({
+        error: "Usuário não encontrado",
+      });
+    }
+
+    const usuario = userQuery.rows[0];
+    const raioKm = usuario.radius;
+
+    if (!raioKm) {
+      return res.status(400).json({
+        error: "Usuário não tem raio definido",
+      });
+    }
+
+    // Buscar todas as cidades para calcular distância
+    const todasCidades = await pool.query("SELECT * FROM cities");
+
+    const cidadesNoRaio = todasCidades.rows
+      .map((cidade) => {
+        const distance = calculateDistance(
+          parseFloat(usuario.lat),
+          parseFloat(usuario.lon),
+          parseFloat(cidade.lat),
+          parseFloat(cidade.lon),
+        );
+
+        return {
+          id: cidade.id,
+          distancia: Number(distance.toFixed(2)),
+        };
+      })
+      .filter((cidade) => cidade.distancia <= raioKm);
+
+    const cidadesIds = cidadesNoRaio.map((c) => c.id);
+
+    if (cidadesIds.length === 0) {
+      return res.json([]);
+    }
+
+    // Buscar funcionários dentro do raio
     const result = await pool.query(
       `
       SELECT 
@@ -345,11 +399,13 @@ async function searchEmployees(req, res) {
       LEFT JOIN professions p ON p.id = u.profession_id
       LEFT JOIN cities c ON c.id = u.city_id
       WHERE u.role = 'EMPLOYEE'
-      AND u.name ILIKE $1
+      AND u.city_id = ANY($1)
+      AND u.name ILIKE $2
+      AND u.id != $3
       ORDER BY u.name
       LIMIT 10
       `,
-      [`%${q}%`], // busca em qualquer parte do nome
+      [cidadesIds, `%${q}%`, userId],
     );
 
     res.json(result.rows);

@@ -8,7 +8,7 @@ const {
   updateProfile,
   getProfessions,
   searchProfessions,
-  searchEmployees
+  searchEmployees,
 } = require("./repository/User");
 const router = express.Router();
 const { authMiddleware } = require("../../middleware/auth");
@@ -70,6 +70,6 @@ router.get("/professions", getProfessions);
 
 router.get("/professions/search", searchProfessions);
 
-router.get("/employees/search", searchEmployees);
+router.get("/employees/search", authMiddleware, searchEmployees);
 
 module.exports = user;
