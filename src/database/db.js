@@ -45,11 +45,35 @@ async function usersTable() {
   );
 }
 
+//TABELA SERVIÇOS (pode já existir, mas garantimos campos mínimos)
+async function servicesTable() {
+  await pool.query(
+    `
+    CREATE TABLE IF NOT EXISTS services (
+      id SERIAL PRIMARY KEY,
+      client_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      employee_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      profession_id INTEGER,
+      value NUMERIC,
+      status VARCHAR(20) DEFAULT 'PENDING',
+      added_as VARCHAR(20) DEFAULT 'CLIENT',
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+    `,
+  );
+
+  // se a tabela já existia, podemos garantir que a coluna added_as esteja presente
+  await pool.query(
+    `ALTER TABLE services ADD COLUMN IF NOT EXISTS added_as VARCHAR(20) DEFAULT 'CLIENT'`,
+  );
+}
+
 //INICIALIZAÇÃO DAS TABELAS -> VERIFICAR MELHOR OPÇÃO PARA DEPOIS
 async function createTables() {
   try {
     await citiesTable();
     await usersTable();
+    await servicesTable();
   } catch (error) {
     console.log("Erro na inicialização das tabelas /db" + error);
   }

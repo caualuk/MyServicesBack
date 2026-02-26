@@ -3,23 +3,38 @@ const pool = require("../../../database/db");
 //CRIAR SERVIÇO
 async function createService(req, res) {
   const clientId = req.user.id;
-  const { employee_id, profession_id, value } = req.body;
+  const userRole = req.user.role;
+  const { employee_id, profession_id, value, added_as } = req.body;
 
-  if (!employee_id || !value) {
+  // default to CLIENT if not provided or invalid
+  const mode = added_as === "EMPLOYEE" ? "EMPLOYEE" : "CLIENT";
+
+  // se for modo "EMPLOYEE" e usuário não for funcionário, bloqueia
+  if (mode === "EMPLOYEE" && userRole !== "EMPLOYEE") {
+    return res.status(403).json({
+      error: "Apenas funcionários podem adicionar serviços como funcionário",
+    });
+  }
+
+  // se modo CLIENT, é necessário escolher um funcionário
+  if (mode === "CLIENT" && (!employee_id || !value)) {
     return res.status(400).json({
       error: "Employee_id e value são obrigatórios",
     });
   }
 
   try {
+    // caso esteja add como funcionário, garantimos que o próprio usuário seja o prestador
+    const finalEmployeeId = mode === "EMPLOYEE" ? clientId : employee_id;
+
     const insertResult = await pool.query(
       `
       INSERT INTO services 
-      (client_id, employee_id, profession_id, value)
-      VALUES ($1, $2, $3, $4)
+      (client_id, employee_id, profession_id, value, added_as)
+      VALUES ($1, $2, $3, $4, $5)
       RETURNING id;
       `,
-      [clientId, employee_id, profession_id || null, value],
+      [clientId, finalEmployeeId, profession_id || null, value, mode],
     );
 
     const serviceId = insertResult.rows[0].id;
@@ -33,6 +48,7 @@ async function createService(req, res) {
         p.name AS profession_name,
         s.status,
         s.value,
+        s.added_as,
         s.created_at
       FROM services s
       JOIN users u ON s.employee_id = u.id
@@ -61,6 +77,7 @@ async function getClientServices(req, res) {
   s.id,
   s.status,
   s.value,
+  s.added_as,
   s.created_at,
   u.name AS employee_name,
   p.name AS profession_name
@@ -131,8 +148,232 @@ async function updateServiceStatus(req, res) {
   }
 }
 
+// MÉTRICAS DE PAGAMENTO
+async function getMetrics(req, res) {
+  const userId = req.user.id;
+  const role = req.user.role;
+
+  try {
+    if (role === "CLIENT") {
+      const result = await pool.query(
+        `
+        SELECT COUNT(*) AS services_count,
+               COALESCE(SUM(value),0) AS total_spent
+        FROM services
+        WHERE client_id = $1
+          AND status = 'PAID'
+          AND added_as = 'CLIENT'
+        `,
+        [userId],
+      );
+
+      const row = result.rows[0];
+      return res.json({
+        role,
+        services_count: parseInt(row.services_count, 10),
+        total_spent: parseFloat(row.total_spent),
+      });
+    }
+
+    if (role === "EMPLOYEE") {
+      const earnedRes = await pool.query(
+        `
+        SELECT COALESCE(SUM(value),0) AS total_earned,
+               COUNT(*) AS services_done
+        FROM services
+        WHERE client_id = $1
+          AND status = 'PAID'
+          AND added_as = 'EMPLOYEE'
+        `,
+        [userId],
+      );
+
+      const spentRes = await pool.query(
+        `
+        SELECT COALESCE(SUM(value),0) AS total_spent
+        FROM services
+        WHERE client_id = $1
+          AND status = 'PAID'
+          AND added_as = 'CLIENT'
+        `,
+        [userId],
+      );
+
+      const totalEarned = parseFloat(earnedRes.rows[0].total_earned);
+      const servicesDone = parseInt(earnedRes.rows[0].services_done, 10);
+      const totalSpent = parseFloat(spentRes.rows[0].total_spent);
+      const saldo = totalEarned - totalSpent;
+
+      return res.json({
+        role,
+        total_earned: totalEarned,
+        services_done: servicesDone,
+        total_spent: totalSpent,
+        saldo_liquido: saldo,
+      });
+    }
+
+    // caso role desconhecido
+    res.status(400).json({ error: "Role inválida" });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Erro ao calcular métricas" });
+  }
+}
+
+// DADOS PARA GRÁFICO DE LINHA (GASTOS/GANHOS POR DATA)
+async function getChartLineData(req, res) {
+  const userId = req.user.id;
+  const role = req.user.role;
+
+  try {
+    if (role === "CLIENT") {
+      // Gastos por data (serviços como cliente que foram pagos)
+      const result = await pool.query(
+        `
+        SELECT 
+          DATE(s.created_at) AS date,
+          SUM(s.value) AS amount
+        FROM services s
+        WHERE s.client_id = $1
+          AND s.status = 'PAID'
+          AND s.added_as = 'CLIENT'
+        GROUP BY DATE(s.created_at)
+        ORDER BY DATE(s.created_at)
+        LIMIT 30
+        `,
+        [userId],
+      );
+
+      const chartData = result.rows.map((row) => ({
+        date: new Date(row.date).toLocaleDateString("pt-BR", {
+          day: "numeric",
+          month: "short",
+        }),
+        gastos: parseFloat(row.amount),
+      }));
+
+      return res.json({ role, data: chartData });
+    }
+
+    if (role === "EMPLOYEE") {
+      // Ganhos e gastos por data
+      const ganhoRes = await pool.query(
+        `
+        SELECT 
+          DATE(s.created_at) AS date,
+          SUM(s.value) AS amount
+        FROM services s
+        WHERE s.client_id = $1
+          AND s.status = 'PAID'
+          AND s.added_as = 'EMPLOYEE'
+        GROUP BY DATE(s.created_at)
+        ORDER BY DATE(s.created_at)
+        LIMIT 30
+        `,
+        [userId],
+      );
+
+      const gastoRes = await pool.query(
+        `
+        SELECT 
+          DATE(s.created_at) AS date,
+          SUM(s.value) AS amount
+        FROM services s
+        WHERE s.client_id = $1
+          AND s.status = 'PAID'
+          AND s.added_as = 'CLIENT'
+        GROUP BY DATE(s.created_at)
+        ORDER BY DATE(s.created_at)
+        LIMIT 30
+        `,
+        [userId],
+      );
+
+      // Combinar dados
+      const allDates = new Set();
+      ganhoRes.rows.forEach((r) => allDates.add(r.date.toString()));
+      gastoRes.rows.forEach((r) => allDates.add(r.date.toString()));
+
+      const charData = Array.from(allDates)
+        .sort()
+        .map((date) => {
+          const ganho = ganhoRes.rows.find((r) => r.date.toString() === date);
+          const gasto = gastoRes.rows.find((r) => r.date.toString() === date);
+
+          return {
+            date: new Date(date).toLocaleDateString("pt-BR", {
+              day: "numeric",
+              month: "short",
+            }),
+            ganhos: ganho ? parseFloat(ganho.amount) : 0,
+            gastos: gasto ? parseFloat(gasto.amount) : 0,
+          };
+        });
+
+      return res.json({ role, data: charData });
+    }
+
+    return res.status(400).json({ error: "Role inválida" });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Erro ao gerar dados do gráfico" });
+  }
+}
+
+// DISTRIBUIÇÃO DE SERVIÇOS POR PROFISSÃO
+async function getServicesByProfession(req, res) {
+  const userId = req.user.id;
+
+  try {
+    const result = await pool.query(
+      `
+      SELECT 
+        COALESCE(p.name, 'Sem Profissão') AS profession,
+        COUNT(*) AS count,
+        SUM(s.value) AS total_value
+      FROM services s
+      LEFT JOIN users u ON s.employee_id = u.id
+      LEFT JOIN professions p ON u.profession_id = p.id
+      WHERE s.client_id = $1
+        AND s.status = 'PAID'
+        AND s.added_as = 'CLIENT'
+      GROUP BY profession
+      ORDER BY count DESC
+      `,
+      [userId],
+    );
+
+    const colors = [
+      "#3B82F6",
+      "#10B981",
+      "#F59E0B",
+      "#EF4444",
+      "#8B5CF6",
+      "#EC4899",
+      "#14B8A6",
+      "#F97316",
+    ];
+
+    const chartData = result.rows.map((row, idx) => ({
+      name: row.profession,
+      value: parseInt(row.count, 10),
+      amount: parseFloat(row.total_value),
+      color: colors[idx % colors.length],
+    }));
+
+    return res.json(chartData);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Erro ao buscar dados de profissões" });
+  }
+}
+
 module.exports = {
   createService,
   getClientServices,
   updateServiceStatus,
+  getMetrics,
+  getChartLineData,
+  getServicesByProfession,
 };

@@ -5,8 +5,11 @@ const { authMiddleware } = require("../../middleware/auth");
 const {
   createService,
   getClientServices,
-//   getEmployeeServices,
+  //   getEmployeeServices,
   updateServiceStatus,
+  getMetrics,
+  getChartLineData,
+  getServicesByProfession,
 } = require("./repository/Service");
 
 // 🔐 Todas protegidas
@@ -22,5 +25,14 @@ router.get("/client", authMiddleware, getClientServices);
 
 // Atualizar status
 router.patch("/:id/status", authMiddleware, updateServiceStatus);
+
+// Métricas personalizadas
+router.get("/metrics", authMiddleware, getMetrics);
+
+// Dados do gráfico de linha
+router.get("/chart/line", authMiddleware, getChartLineData);
+
+// Dados de distribuição por profissão
+router.get("/chart/professions", authMiddleware, getServicesByProfession);
 
 module.exports = router;
