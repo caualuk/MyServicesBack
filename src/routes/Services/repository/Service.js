@@ -316,6 +316,7 @@ async function getChartLineData(req, res) {
         FROM services s
         WHERE s.client_id = $1
           AND s.status = 'PAID'
+          AND s.added_as = 'CLIENT'
         GROUP BY DATE(s.created_at)
         ORDER BY DATE(s.created_at)
         LIMIT 30
